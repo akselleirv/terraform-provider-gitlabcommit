@@ -3,6 +3,7 @@ module github.com/hashicorp/terraform-provider-gitlabcommit
 go 1.17
 
 require (
+	github.com/avast/retry-go v3.0.0+incompatible
 	github.com/hashicorp/terraform-plugin-docs v0.5.0
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.8.0
 	github.com/stretchr/testify v1.7.0

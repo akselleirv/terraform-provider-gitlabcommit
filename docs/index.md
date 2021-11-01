@@ -16,7 +16,7 @@ description: |-
 terraform {
   required_providers {
     gitlabcommit = {
-      source  = "akselleirv/gitlabcommit"
+      source  = "akselleirv//gitlabcommit"
       version = "0.0.1"
     }
   }

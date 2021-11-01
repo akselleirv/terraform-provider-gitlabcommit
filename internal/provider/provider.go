@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"github.com/avast/retry-go"
 	"github.com/xanzy/go-gitlab"
 	"log"
 	"strings"
@@ -183,13 +184,22 @@ LOOP:
 func doCommits(projectId string, c *gitlab.Client, opts *gitlab.CreateCommitOptions) error {
 	log.Printf("creating commits for %d actions", len(opts.Actions))
 
-	_, resp, err := c.Commits.CreateCommit(projectId, opts)
-	if err != nil {
-		if strings.Contains(err.Error(), "A file with this name already exists") {
+	return retry.Do(
+		func() error {
+			_, resp, err := c.Commits.CreateCommit(projectId, opts)
+			if err != nil {
+				if strings.Contains(err.Error(), "A file with this name already exists") {
+					return nil
+				}
+				return fmt.Errorf("unable to create commit: status message %s: status code %d: %w", resp.Status, resp.StatusCode, err)
+			}
 			return nil
-		}
-		return fmt.Errorf("unable to create commit: status message %s: status code %d: %w", resp.Status, resp.StatusCode, err)
-	}
-
-	return nil
+		},
+		retry.RetryIf(func(err error) bool {
+			// This error can happen if ref was updated at the same time as commit was pushed.
+			return strings.Contains(err.Error(), fmt.Sprintf("Could not update refs/heads/%s. Please refresh and try again..", *opts.Branch))
+		}),
+		retry.Delay(1*time.Second),
+		retry.MaxDelay(3*time.Second),
+	)
 }
