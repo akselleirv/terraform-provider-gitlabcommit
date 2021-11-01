@@ -1,45 +1,57 @@
 package provider
 
 import (
+	"context"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
+	"os"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// providerFactories are used to instantiate a provider during acceptance testing.
-// The factory function will be invoked for every Terraform CLI command executed
-// to create a provider server to which the CLI can reattach.
-var providerFactories = map[string]func() (*schema.Provider, error){
-	"scaffolding": func() (*schema.Provider, error) {
-		return New("dev")(), nil
+var testAccProvider *schema.Provider
+var testAccProviderFactories = map[string]func() (*schema.Provider, error){
+	"gitlabcommit": func() (*schema.Provider, error) {
+		return New(), nil
 	},
 }
 
+func init() {
+	testAccProvider = New()
+	testAccProvider.Configure(context.Background(), &terraform.ResourceConfig{})
+	testAccProviderFactories = map[string]func() (*schema.Provider, error){
+		"gitlabcommit": func() (*schema.Provider, error) {
+			return testAccProvider, nil
+		},
+	}
+}
+
 func TestProvider(t *testing.T) {
-	if err := New("dev")().InternalValidate(); err != nil {
+	if err := New().InternalValidate(); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 }
 
 func testAccPreCheck(t *testing.T) {
-	// You can add code here to run prior to any test case execution, for example assertions
-	// about the appropriate environment variables being set are common to see in a pre-check
-	// function.
+	if v := os.Getenv("GITLAB_TOKEN"); v == "" {
+		t.Fatalf("GITLAB_TOKEN env var must be set for acceptance test")
+	}
+	if v := os.Getenv("PROJECT_ID"); v == "" {
+		t.Fatalf("PROJECT_ID env var must be for acceptance test")
+	}
 }
 
 func TestActionSyncronizer(t *testing.T) {
 	var (
-		resourceHalted   string
-		actualActions    []*gitlab.CommitActionOptions
-		debounce         = 50 * time.Millisecond
-		actionCh         = make(chan *gitlab.CommitActionOptions)
-		resendFilePathCh = make(chan string)
-		done             = make(chan string)
-		wg               = sync.WaitGroup{}
+		resourceHalted string
+		actualActions  []*gitlab.CommitActionOptions
+		debounce       = 50 * time.Millisecond
+		actionCh       = make(chan *gitlab.CommitActionOptions)
+		done           = make(chan string)
+		wg             = sync.WaitGroup{}
 	)
 
 	actions := []*gitlab.CommitActionOptions{
@@ -56,7 +68,7 @@ func TestActionSyncronizer(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resourceHalted, actualActions = actionSyncronizer(debounce, actionCh, resendFilePathCh, done)
+		resourceHalted, actualActions = actionSyncronizer(debounce, actionCh, done)
 	}()
 
 	actionCh <- actions[0]

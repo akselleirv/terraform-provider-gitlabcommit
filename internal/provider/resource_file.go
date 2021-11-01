@@ -11,15 +11,15 @@ import (
 	"strings"
 )
 
-func resourceGitlabCommits() *schema.Resource {
+func resourcegitlabcommit() *schema.Resource {
 	return &schema.Resource{
 		// This description is used by the documentation generator and the language server.
 		Description: "The file resource will store a file in a repository based on the provided Gitlab project ID.",
 
-		CreateContext: resourceGitlabCommitsCreate,
-		ReadContext:   resourceGitlabCommitsRead,
-		UpdateContext: resourceGitlabCommitsUpdate,
-		DeleteContext: resourceGitlabCommitsDelete,
+		CreateContext: resourcegitlabcommitCreate,
+		ReadContext:   resourcegitlabcommitRead,
+		UpdateContext: resourcegitlabcommitUpdate,
+		DeleteContext: resourcegitlabcommitDelete,
 
 		Schema: map[string]*schema.Schema{
 			"file_path": {
@@ -35,7 +35,7 @@ func resourceGitlabCommits() *schema.Resource {
 	}
 }
 
-func resourceGitlabCommitsCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourcegitlabcommitCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	err := applyAction(gitlab.FileAction(gitlab.FileCreate), meta.(*client), d)
 	if err != nil {
 		return diag.FromErr(err)
@@ -46,12 +46,11 @@ func resourceGitlabCommitsCreate(ctx context.Context, d *schema.ResourceData, me
 	return nil
 }
 
-func resourceGitlabCommitsRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourcegitlabcommitRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*client)
-	filePath := d.Get("file_path").(string)
+	filePath := d.Id()
 	options := &gitlab.GetFileOptions{
-		// TODO: send branch here from provider
-		Ref: gitlab.String("main"),
+		Ref: gitlab.String(client.branch),
 	}
 
 	repositoryFile, _, err := client.gitlab.RepositoryFiles.GetFile(client.projectId, filePath, options)
@@ -64,19 +63,21 @@ func resourceGitlabCommitsRead(ctx context.Context, d *schema.ResourceData, meta
 		return diag.FromErr(err)
 	}
 
+	d.Set("project", client.projectId)
+	d.Set("file_path", repositoryFile.FilePath)
+	d.Set("branch", repositoryFile.Ref)
 	d.SetId(repositoryFile.FilePath)
+
 	content, err := base64.StdEncoding.DecodeString(repositoryFile.Content)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("unable to decode content: %w", err))
 	}
-	if err := d.Set("content", string(content)); err != nil {
-		return diag.FromErr(err)
-	}
+	d.Set("content", string(content))
 
 	return nil
 }
 
-func resourceGitlabCommitsUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourcegitlabcommitUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	err := applyAction(gitlab.FileAction(gitlab.FileUpdate), meta.(*client), d)
 	if err != nil {
 		return diag.FromErr(err)
@@ -86,7 +87,7 @@ func resourceGitlabCommitsUpdate(ctx context.Context, d *schema.ResourceData, me
 	return nil
 }
 
-func resourceGitlabCommitsDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourcegitlabcommitDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	err := applyAction(gitlab.FileAction(gitlab.FileDelete), meta.(*client), d)
 	if err != nil {
 		return diag.FromErr(err)
