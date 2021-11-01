@@ -63,11 +63,8 @@ func resourcegitlabcommitRead(ctx context.Context, d *schema.ResourceData, meta 
 		return diag.FromErr(err)
 	}
 
-	d.Set("project", client.projectId)
 	d.Set("file_path", repositoryFile.FilePath)
-	d.Set("branch", repositoryFile.Ref)
 	d.SetId(repositoryFile.FilePath)
-
 	content, err := base64.StdEncoding.DecodeString(repositoryFile.Content)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("unable to decode content: %w", err))
