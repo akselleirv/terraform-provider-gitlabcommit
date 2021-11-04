@@ -3,23 +3,26 @@ package provider
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"github.com/avast/retry-go"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/xanzy/go-gitlab"
-	"log"
-	"strings"
+	"net/http"
+	"os"
+	"time"
 )
 
-func resourcegitlabcommit() *schema.Resource {
+func resourceGitlabCommit() *schema.Resource {
 	return &schema.Resource{
 		// This description is used by the documentation generator and the language server.
 		Description: "The file resource will store a file in a repository based on the provided Gitlab project ID.",
 
-		CreateContext: resourcegitlabcommitCreate,
-		ReadContext:   resourcegitlabcommitRead,
-		UpdateContext: resourcegitlabcommitUpdate,
-		DeleteContext: resourcegitlabcommitDelete,
+		CreateContext: resourceGitlabcommitCreate,
+		ReadContext:   resourceGitlabcommitRead,
+		UpdateContext: resourceGitlabcommitUpdate,
+		DeleteContext: resourceGitlabcommitDelete,
 
 		Schema: map[string]*schema.Schema{
 			"file_path": {
@@ -35,35 +38,20 @@ func resourcegitlabcommit() *schema.Resource {
 	}
 }
 
-func resourcegitlabcommitCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	err := applyAction(gitlab.FileAction(gitlab.FileCreate), meta.(*client), d)
-	if err != nil {
-		return diag.FromErr(err)
-	}
-
-	d.SetId(d.Get("file_path").(string))
-
-	return nil
-}
-
-func resourcegitlabcommitRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourceGitlabcommitRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*client)
 	filePath := d.Id()
-	options := &gitlab.GetFileOptions{
-		Ref: gitlab.String(client.branch),
-	}
 
-	repositoryFile, _, err := client.gitlab.RepositoryFiles.GetFile(client.projectId, filePath, options)
+	repositoryFile, err := getFile(filePath, client.branch, client.projectId, client.gitlab)
 	if err != nil {
-		if strings.Contains(err.Error(), "404 File Not Found") {
-			log.Printf("[WARN] file %s not found, removing from state", filePath)
+		if errors.Is(err, os.ErrNotExist) {
+			logD(fmt.Sprintf("file %s not found, removing from state", filePath))
 			d.SetId("")
 			return nil
 		}
 		return diag.FromErr(err)
 	}
 
-	d.Set("file_path", repositoryFile.FilePath)
 	d.SetId(repositoryFile.FilePath)
 	content, err := base64.StdEncoding.DecodeString(repositoryFile.Content)
 	if err != nil {
@@ -74,17 +62,30 @@ func resourcegitlabcommitRead(ctx context.Context, d *schema.ResourceData, meta 
 	return nil
 }
 
-func resourcegitlabcommitUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourceGitlabcommitCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	err := applyAction(gitlab.FileAction(gitlab.FileCreate), meta.(*client), d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	d.SetId(d.Get("file_path").(string))
+	d.Set("content", d.Get("content"))
+
+	return resourceGitlabcommitRead(ctx, d, meta)
+}
+
+func resourceGitlabcommitUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	err := applyAction(gitlab.FileAction(gitlab.FileUpdate), meta.(*client), d)
 	if err != nil {
 		return diag.FromErr(err)
 	}
 
-	d.SetId("")
-	return nil
+	d.SetId(d.Get("file_path").(string))
+	d.Set("content", d.Get("content"))
+	return resourceGitlabcommitRead(ctx, d, meta)
 }
 
-func resourcegitlabcommitDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+func resourceGitlabcommitDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	err := applyAction(gitlab.FileAction(gitlab.FileDelete), meta.(*client), d)
 	if err != nil {
 		return diag.FromErr(err)
@@ -100,15 +101,13 @@ func waitForResponse(filePath string, doneFilePath chan string, errCh <-chan err
 		select {
 		case filePathReceived := <-doneFilePath:
 			if filePathReceived == filePath {
-				log.Println("received my own filepath: ", filePathReceived)
-				break
+				logD("[RESOURCE] received my own filepath: " + filePathReceived)
+				return nil
 			}
-			go func() {
-				// TODO: check if this goroutine is not needed
-				log.Println("resending file back to synchronizer: ", filePathReceived)
-				doneFilePath <- filePathReceived
-			}()
-			return nil
+			go func(returnFilePath string) {
+				logD("[RESOURCE] resource '" + filePath + "' got '" + returnFilePath + "' sending back to synchronizer")
+				doneFilePath <- returnFilePath
+			}(filePathReceived)
 		case err := <-errCh:
 			return err
 		}
@@ -132,4 +131,32 @@ func applyAction(action *gitlab.FileActionValue, client *client, d *schema.Resou
 		client.doneFilePath,
 		client.errCh,
 	)
+}
+
+func getFile(filePath, branch, projectId string, client *gitlab.Client) (*gitlab.File, error) {
+	options := &gitlab.GetFileOptions{
+		Ref: gitlab.String(branch),
+	}
+	var repositoryFile *gitlab.File
+	var resp *gitlab.Response
+
+	// A resource might finish before the provider commits the files therefore we need to retry until file is committed
+	err := retry.Do(func() error {
+		var err error
+		repositoryFile, resp, err = client.RepositoryFiles.GetFile(projectId, filePath, options)
+		if err != nil {
+			if resp.StatusCode == http.StatusNotFound {
+				return os.ErrNotExist
+			}
+			return err
+		}
+		return nil
+	},
+		retry.MaxDelay(600*time.Millisecond),
+		retry.Delay(300*time.Millisecond),
+		retry.RetryIf(func(err error) bool {
+			return errors.Is(err, os.ErrNotExist)
+		}))
+
+	return repositoryFile, err
 }

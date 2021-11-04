@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/stretchr/testify/assert"
@@ -48,40 +49,41 @@ func TestActionSyncronizer(t *testing.T) {
 	var (
 		resourceHalted string
 		actualActions  []*gitlab.CommitActionOptions
+		inputActions   []*gitlab.CommitActionOptions
 		debounce       = 50 * time.Millisecond
 		actionCh       = make(chan *gitlab.CommitActionOptions)
-		done           = make(chan string)
+		filePathDone   = make(chan string)
 		wg             = sync.WaitGroup{}
 	)
 
-	actions := []*gitlab.CommitActionOptions{
-		{
+	for i := 0; i < 10; i++ {
+		inputActions = append(inputActions, &gitlab.CommitActionOptions{
 			Action:   gitlab.FileAction(gitlab.FileCreate),
-			FilePath: gitlab.String("path/text-0.txt"),
-		}, {
-			Action:   gitlab.FileAction(gitlab.FileCreate),
-			FilePath: gitlab.String("path/text-1.txt"),
-		},
+			FilePath: gitlab.String(fmt.Sprintf("path/text-%d.txt", i)),
+		})
 	}
 
 	start := time.Now()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		resourceHalted, actualActions = actionSyncronizer(debounce, actionCh, done)
+		resourceHalted, actualActions = actionSyncronizer(debounce, actionCh, filePathDone)
 	}()
 
-	actionCh <- actions[0]
-	actionCh <- actions[1]
+	for i, action := range inputActions {
+		actionCh <- action
 
-	actualFilePathDone := <-done
-	assert.Equal(t, *actions[1].FilePath, actualFilePathDone)
-	assert.Equal(t, "", resourceHalted, "this resource should be halted")
-	assert.Nil(t, actualActions, "the collected actions should not be sent yet")
+		if i != 0 {
+			actualFilePathDone := <-filePathDone
+			assert.Equal(t, *inputActions[i].FilePath, actualFilePathDone)
+			assert.Equal(t, "", resourceHalted, "this resource should be halted")
+			assert.Nil(t, actualActions, "the collected actions should not be sent yet")
+		}
+	}
 
 	wg.Wait()
 	within50Milli := time.Now().Add(time.Millisecond * -50)
-	assert.WithinDuration(t, within50Milli, start, 5*time.Millisecond)
-	assert.Equal(t, actions, actualActions)
-	assert.Equal(t, *actions[0].FilePath, resourceHalted)
+	assert.WithinDuration(t, within50Milli, start, 30*time.Millisecond)
+	assert.Equal(t, inputActions, actualActions)
+	assert.Equal(t, *inputActions[0].FilePath, resourceHalted)
 }

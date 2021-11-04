@@ -1,8 +1,8 @@
 terraform {
   required_providers {
     gitlabcommit = {
-      source  = "akselleirv//gitlabcommit"
-      version = "0.0.1"
+      source  = "akselleirv/gitlabcommit"
+      version = "0.0.2"
     }
   }
 }
@@ -29,11 +29,13 @@ locals {
     { path : "dir/file-1.txt", content : "some text 1" },
     { path : "dir/file-2.txt", content : "some text 2" },
     { path : "dir/file-3.txt", content : "some text 3" },
+    { path : "dir/file-4.txt", content : "some text 4" },
+    { path : "dir/file-5.txt", content : "some text 5" },
   ]
 }
 
 resource "gitlabcommit_file" "example" {
-  for_each  = { for file in local.files : file.path => file.content }
+  for_each  = {for file in local.files : file.path => file.content}
   file_path = each.key
   content   = each.value
 }

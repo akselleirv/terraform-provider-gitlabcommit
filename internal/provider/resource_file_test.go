@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 )
@@ -51,6 +54,66 @@ func TestAccResourceFile_create_many_files(t *testing.T) {
 }
 
 */
+
+func TestWaitForResponse(t *testing.T) {
+	var (
+		numberOfResources = 10
+		debounce          = 50 * time.Millisecond
+
+		actionCh     = make(chan *gitlab.CommitActionOptions)
+		doneFilePath = make(chan string)
+		errCh        = make(chan error)
+
+		resourceWaitGroup           = &sync.WaitGroup{}
+		actionSynchronizerWaitGroup = &sync.WaitGroup{}
+
+		haltedResourceFilePath string
+		errorsReceived         []error
+		actualActions          []*gitlab.CommitActionOptions
+		inputActions           []*gitlab.CommitActionOptions
+	)
+	// Create mock data
+	for i := 0; i < numberOfResources; i++ {
+		inputActions = append(inputActions, &gitlab.CommitActionOptions{
+			Action:   gitlab.FileAction(gitlab.FileCreate),
+			FilePath: gitlab.String(fmt.Sprintf("path/text-%d.txt", i)),
+		})
+	}
+
+	// Start action synchronizer
+	actionSynchronizerWaitGroup.Add(1)
+	go func() {
+		defer actionSynchronizerWaitGroup.Done()
+		haltedResourceFilePath, actualActions = actionSyncronizer(debounce, actionCh, doneFilePath)
+	}()
+
+	// Start goroutines that is listening on channels
+	resourceWaitGroup.Add(numberOfResources)
+	for i := 0; i < numberOfResources; i++ {
+		go func(index int, filePath string) {
+			defer resourceWaitGroup.Done()
+			actionCh <- inputActions[index]
+			errorsReceived = append(errorsReceived, waitForResponse(filePath, doneFilePath, errCh))
+		}(i, *inputActions[i].FilePath)
+	}
+
+	// validate synchronizer output
+	actionSynchronizerWaitGroup.Wait()
+	assert.Contains(t, haltedResourceFilePath, "path/text-")
+	assert.ElementsMatch(t, inputActions, actualActions)
+
+	// validate if error chan is working as expected
+	err := errors.New("expected test error")
+	errCh <- err
+	resourceWaitGroup.Wait()
+	// only last error should contain an error
+	for _, err := range errorsReceived[:numberOfResources-1] {
+		assert.Nil(t, err)
+	}
+
+	assert.Error(t, errorsReceived[numberOfResources-1])
+
+}
 
 func testAccResourceFileSimple() string {
 	return fmt.Sprintf(`

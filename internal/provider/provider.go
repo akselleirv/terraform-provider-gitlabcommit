@@ -6,6 +6,7 @@ import (
 	"github.com/avast/retry-go"
 	"github.com/xanzy/go-gitlab"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,10 +67,16 @@ func New() *schema.Provider {
 				Optional: true,
 				Default:  "terraform-provider-gitlabcommit",
 			},
+			"debounce_time": {
+				Type:        schema.TypeInt,
+				Optional:    true,
+				Default:     2000,
+				Description: "How long the provider should wait for the resources before sending the commit. Value is given in milliseconds.",
+			},
 		},
 		ConfigureContextFunc: configure,
 		ResourcesMap: map[string]*schema.Resource{
-			"gitlabcommit_file": resourcegitlabcommit(),
+			"gitlabcommit_file": resourceGitlabCommit(),
 		},
 	}
 
@@ -105,7 +112,7 @@ func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.D
 
 	go handleResources(d, gitlabClient, actionCh, doneFilePath, errCh)
 
-	log.Println("[DEBUG] done configuring provider")
+	logD("done configuring provider")
 	return &client{
 		gitlab:       gitlabClient,
 		projectId:    d.Get("project_id").(string),
@@ -118,26 +125,25 @@ func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.D
 }
 
 func handleResources(d *schema.ResourceData, c *gitlab.Client, actionCh <-chan *gitlab.CommitActionOptions, doneFilePath chan<- string, errCh chan<- error) {
-	haltedResource, commitActions := actionSyncronizer(2*time.Second, actionCh, doneFilePath)
-	defer func() {
-		doneFilePath <- haltedResource
-	}()
+	duration := time.Duration(d.Get("debounce_time").(int))
+	debounceDuration := duration * time.Millisecond
+	_, commitActions := actionSyncronizer(debounceDuration, actionCh, doneFilePath)
 	err := doCommits(d.Get("project_id").(string), c, &gitlab.CreateCommitOptions{
 		Actions:       commitActions,
 		Branch:        gitlab.String(d.Get("branch").(string)),
 		AuthorEmail:   gitlab.String(d.Get("author_email").(string)),
 		AuthorName:    gitlab.String(d.Get("author_name").(string)),
 		CommitMessage: gitlab.String(d.Get("commit_message").(string)),
-	},
-	)
+	})
+
 	if err != nil {
-		log.Printf("received an error when sending commit: %s", err.Error())
+		logD("received an error when sending commit: " + err.Error())
 		errCh <- err
-		log.Println("successfully sent the error on the the errCh")
+		logD("successfully sent the error on the the errCh")
 		return
 	}
 	errCh <- nil
-	log.Println("successfully sent commit to gitlab api")
+	logD("successfully sent commit to gitlab api")
 }
 
 // actionSyncronizer will collect all gitlab.CommitActionOptions and return them in a slice when time since last resource received is bigger than debounce time.
@@ -156,23 +162,24 @@ LOOP:
 	for {
 		select {
 		case action := <-actionCh:
-			log.Println("received filePath for filepath: ", *action.FilePath)
+			logD("[PROVIDER] received filePath for: " + *action.FilePath)
 			timeNow = time.Now()
 			actionsToSend = append(actionsToSend, action)
 
 			if haltedResource == "" {
-				log.Println("halting resource with filepath: ", *action.FilePath)
+				logD("[PROVIDER] halting resource with filepath: " + *action.FilePath)
 				// we halt this resource to avoid terraform exiting
 				haltedResource = *action.FilePath
 			} else {
-				log.Println("sending done to filepath: ", *action.FilePath)
+				logD("[PROVIDER] sending done to filepath: " + *action.FilePath)
 				// but we let the other resource exit
 				filePathDone <- *action.FilePath
 			}
+			logD("[PROVIDER] total received actions: " + strconv.Itoa(len(actionsToSend)))
 		case <-ticker.C:
-			log.Println("new tick")
+			logD("[PROVIDER] new tick")
 			if time.Since(timeNow) > debounce {
-				log.Println("breaking loop")
+				logD("[PROVIDER] breaking loop due to time since last received action is greater than debounce time")
 				break LOOP
 			}
 		}
@@ -182,7 +189,11 @@ LOOP:
 }
 
 func doCommits(projectId string, c *gitlab.Client, opts *gitlab.CreateCommitOptions) error {
-	log.Printf("creating commits for %d actions", len(opts.Actions))
+	if len(opts.Actions) == 0 {
+		logD("skipping commit due no actions")
+		return nil
+	}
+	logD(fmt.Sprintf("creating commits for %d actions", len(opts.Actions)))
 
 	return retry.Do(
 		func() error {
@@ -202,4 +213,8 @@ func doCommits(projectId string, c *gitlab.Client, opts *gitlab.CreateCommitOpti
 		retry.Delay(1*time.Second),
 		retry.MaxDelay(3*time.Second),
 	)
+}
+
+func logD(v string) {
+	log.Println("[DEBUG] " + v)
 }
