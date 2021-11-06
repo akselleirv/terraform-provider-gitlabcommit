@@ -1,8 +1,8 @@
 terraform {
   required_providers {
     gitlabcommit = {
-      source  = "akselleirv/gitlabcommit"
-      version = "0.0.2"
+      source  = "akselleirv/local/gitlabcommit"
+      version = ">=0.0.1"
     }
   }
 }
@@ -15,6 +15,10 @@ variable "project_id" {
   type = string
 }
 
+variable "files" {
+  type = list(string) // a list of file paths
+}
+
 provider "gitlabcommit" {
   gitlab_api_token = var.gitlab_api_token
   project_id       = var.project_id
@@ -24,18 +28,9 @@ provider "gitlabcommit" {
   commit_message   = "I can add many files!"
 }
 
-locals {
-  files = [
-    { path : "dir/file-1.txt", content : "some text 1" },
-    { path : "dir/file-2.txt", content : "some text 2" },
-    { path : "dir/file-3.txt", content : "some text 3" },
-    { path : "dir/file-4.txt", content : "some text 4" },
-    { path : "dir/file-5.txt", content : "some text 5" },
-  ]
-}
 
 resource "gitlabcommit_file" "example" {
-  for_each  = {for file in local.files : file.path => file.content}
+  for_each  = {for idx, filepath in var.files : filepath => "content #${idx} - ${uuid()}"}
   file_path = each.key
   content   = each.value
 }

@@ -60,17 +60,13 @@ func TestWaitForResponse(t *testing.T) {
 		numberOfResources = 10
 		debounce          = 50 * time.Millisecond
 
-		actionCh     = make(chan *gitlab.CommitActionOptions)
-		doneFilePath = make(chan string)
-		errCh        = make(chan error)
+		actionCh       = make(chan *gitlab.CommitActionOptions)
+		responseSyncCh = make(chan *responseSync)
 
-		resourceWaitGroup           = &sync.WaitGroup{}
-		actionSynchronizerWaitGroup = &sync.WaitGroup{}
+		resourceWaitGroup = &sync.WaitGroup{}
 
-		haltedResourceFilePath string
-		errorsReceived         []error
-		actualActions          []*gitlab.CommitActionOptions
-		inputActions           []*gitlab.CommitActionOptions
+		errorsReceived []error
+		inputActions   []*gitlab.CommitActionOptions
 	)
 	// Create mock data
 	for i := 0; i < numberOfResources; i++ {
@@ -80,12 +76,15 @@ func TestWaitForResponse(t *testing.T) {
 		})
 	}
 
+	expectedErr := errors.New("this is an expected error")
+
+	doCommit := func(actualActions []*gitlab.CommitActionOptions) error {
+		assert.ElementsMatch(t, inputActions, actualActions)
+		return expectedErr
+	}
+
 	// Start action synchronizer
-	actionSynchronizerWaitGroup.Add(1)
-	go func() {
-		defer actionSynchronizerWaitGroup.Done()
-		haltedResourceFilePath, actualActions = actionSyncronizer(debounce, actionCh, doneFilePath)
-	}()
+	go actionSyncronizer(debounce, actionCh, responseSyncCh, doCommit)
 
 	// Start goroutines that is listening on channels
 	resourceWaitGroup.Add(numberOfResources)
@@ -93,22 +92,15 @@ func TestWaitForResponse(t *testing.T) {
 		go func(index int, filePath string) {
 			defer resourceWaitGroup.Done()
 			actionCh <- inputActions[index]
-			errorsReceived = append(errorsReceived, waitForResponse(filePath, doneFilePath, errCh))
+			errorsReceived = append(errorsReceived, waitForResponse(filePath, responseSyncCh))
 		}(i, *inputActions[i].FilePath)
 	}
 
-	// validate synchronizer output
-	actionSynchronizerWaitGroup.Wait()
-	assert.Contains(t, haltedResourceFilePath, "path/text-")
-	assert.ElementsMatch(t, inputActions, actualActions)
-
-	// validate if error chan is working as expected
-	err := errors.New("expected test error")
-	errCh <- err
+	// validate if error handling is working as expected
 	resourceWaitGroup.Wait()
 	// only last error should contain an error
 	for _, err := range errorsReceived[:numberOfResources-1] {
-		assert.Nil(t, err)
+		assert.NoError(t, err)
 	}
 
 	assert.Error(t, errorsReceived[numberOfResources-1])

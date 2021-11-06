@@ -72,6 +72,11 @@ jobs:
         run: |
           go mod download
 
+      - name: Terratest
+        timeout-minutes: 10
+        run: |
+          go test -v ./examples/provider/test/
+
       - name: TF acceptance tests
         timeout-minutes: 10
         env:
