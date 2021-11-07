@@ -10,6 +10,14 @@ description: |-
 
 # gitlabcommit Provider
 
+This provider can add one or more files using the `for_each` meta-argument on `gitlabcommits_file`resource.
+
+# Motivation
+
+As of writing there is one pull request for adding file resource for the offical Gitlab terraform provider, but is has a
+limitation of only being able to add one file at a time or set `-parallelism=1`. This provider collects create, update
+and delete actions and commits all changes in one commit.
+
 ## Example Usage
 
 ```terraform
