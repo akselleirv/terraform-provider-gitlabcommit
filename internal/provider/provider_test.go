@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
+	"log"
 	"os"
 	"sync"
 	"testing"
@@ -63,13 +64,13 @@ func TestActionSyncronizer(t *testing.T) {
 
 	doCommits := func(actualActions []*gitlab.CommitActionOptions) error {
 		assert.Equal(t, inputActions, actualActions)
+		wg.Done()
 		return nil
 	}
 
 	start := time.Now()
 	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		actionSyncronizer(debounce, actionCh, responseSyncCh, doCommits)
 	}()
 
@@ -82,7 +83,7 @@ func TestActionSyncronizer(t *testing.T) {
 			assert.NoError(t, resp.err)
 		}
 	}
-
+	log.Println("here 1")
 	wg.Wait()
 	within100Milli := time.Now().Add(time.Millisecond * -100)
 	assert.WithinDuration(t, within100Milli, start, 50*time.Millisecond)

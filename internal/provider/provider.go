@@ -154,7 +154,7 @@ func actionSyncronizer(debounce time.Duration, actionCh <-chan *gitlab.CommitAct
 	)
 
 	defer ticker.Stop()
-LOOP:
+
 	for {
 		select {
 		case action := <-actionCh:
@@ -181,7 +181,7 @@ LOOP:
 				if len(actionsToSend) == 0 {
 					logD("[PROVIDER] exiting since no new actions received")
 					close(respond)
-					break LOOP
+					return
 				}
 
 				logD("[PROVIDER] sending commits due to time since last received action is greater than debounce time")
