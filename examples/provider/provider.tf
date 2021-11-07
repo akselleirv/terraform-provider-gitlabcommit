@@ -30,7 +30,7 @@ provider "gitlabcommit" {
 
 
 resource "gitlabcommit_file" "example" {
-  for_each  = {for idx, filepath in var.files : filepath => "content #${idx} - ${uuid()}"}
+  for_each  = { for idx, filepath in var.files : filepath => "content #${idx} - ${uuid()}" }
   file_path = each.key
   content   = each.value
 }

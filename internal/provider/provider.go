@@ -70,7 +70,7 @@ func New() *schema.Provider {
 			"debounce_time": {
 				Type:        schema.TypeInt,
 				Optional:    true,
-				Default:     2000,
+				Default:     200,
 				Description: "How long the provider should wait for the resources before sending the commit. Value is given in milliseconds.",
 			},
 		},

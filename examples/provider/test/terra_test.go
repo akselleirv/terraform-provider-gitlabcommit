@@ -7,6 +7,7 @@ import (
 	"github.com/gruntwork-io/terratest/modules/terraform"
 	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -28,14 +29,14 @@ func TestResourceWithForEach(t *testing.T) {
 			"TF_VAR_project_id":       projectId,
 		},
 	}
-
-	defer terraform.Destroy(t, opts)
-	terraform.InitAndApply(t, opts)
-
 	c, err := gitlab.NewClient(token)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	defer validateFilesNotExist(t, filePaths, c, projectId)
+	defer terraform.Destroy(t, opts)
+	terraform.InitAndApply(t, opts)
 
 	// wait for gitlab to update
 	time.Sleep(1 * time.Second)
@@ -49,6 +50,16 @@ func validateFilesExist(t *testing.T, paths []string, c *gitlab.Client, projectI
 		decodedContent, err := base64.StdEncoding.DecodeString(file.Content)
 		assert.NoError(t, err)
 		assert.Contains(t, string(decodedContent), "content #")
+	}
+}
+
+func validateFilesNotExist(t *testing.T, paths []string, c *gitlab.Client, projectId string) {
+	// wait for gitlab to update
+	time.Sleep(1 * time.Second)
+
+	for _, path := range paths {
+		_, resp, _ := c.RepositoryFiles.GetFile(projectId, path, &gitlab.GetFileOptions{Ref: gitlab.String("main")})
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	}
 }
 
