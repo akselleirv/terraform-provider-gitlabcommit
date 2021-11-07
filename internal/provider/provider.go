@@ -70,7 +70,7 @@ func New() *schema.Provider {
 			"debounce_time": {
 				Type:        schema.TypeInt,
 				Optional:    true,
-				Default:     2000,
+				Default:     200,
 				Description: "How long the provider should wait for the resources before sending the commit. Value is given in milliseconds.",
 			},
 		},
@@ -82,6 +82,15 @@ func New() *schema.Provider {
 
 }
 
+// responseSync is the response sent from actionSyncronizer
+type responseSync struct {
+	// filePath is used to tell the resource that they can exit if the filePath is theirs
+	filePath string
+
+	// err will only be received by the halted resource
+	err error
+}
+
 type client struct {
 	gitlab *gitlab.Client
 
@@ -91,18 +100,13 @@ type client struct {
 
 	actionCh chan<- *gitlab.CommitActionOptions
 
-	// doneFilePath is used to tell the resource that they can exit if the filePath is theirs
-	doneFilePath chan string
-
-	// errCh is used for communicate errors if commit fails
-	errCh <-chan error
+	responseSyncCh chan *responseSync
 }
 
 func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
 	var (
-		actionCh     = make(chan *gitlab.CommitActionOptions)
-		doneFilePath = make(chan string)
-		errCh        = make(chan error)
+		actionCh       = make(chan *gitlab.CommitActionOptions)
+		responseSyncCh = make(chan *responseSync)
 	)
 
 	gitlabClient, err := gitlab.NewClient(d.Get("gitlab_api_token").(string))
@@ -110,45 +114,38 @@ func configure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.D
 		return nil, diag.FromErr(err)
 	}
 
-	go handleResources(d, gitlabClient, actionCh, doneFilePath, errCh)
+	go handleResources(d, gitlabClient, actionCh, responseSyncCh)
 
 	logD("done configuring provider")
 	return &client{
-		gitlab:       gitlabClient,
-		projectId:    d.Get("project_id").(string),
-		branch:       d.Get("branch").(string),
-		doneFilePath: doneFilePath,
-		actionCh:     actionCh,
-		errCh:        errCh,
+		gitlab:         gitlabClient,
+		projectId:      d.Get("project_id").(string),
+		branch:         d.Get("branch").(string),
+		actionCh:       actionCh,
+		responseSyncCh: responseSyncCh,
 	}, nil
 
 }
 
-func handleResources(d *schema.ResourceData, c *gitlab.Client, actionCh <-chan *gitlab.CommitActionOptions, doneFilePath chan<- string, errCh chan<- error) {
+func handleResources(d *schema.ResourceData, c *gitlab.Client, actionCh <-chan *gitlab.CommitActionOptions, respond chan<- *responseSync) {
 	duration := time.Duration(d.Get("debounce_time").(int))
 	debounceDuration := duration * time.Millisecond
-	_, commitActions := actionSyncronizer(debounceDuration, actionCh, doneFilePath)
-	err := doCommits(d.Get("project_id").(string), c, &gitlab.CreateCommitOptions{
-		Actions:       commitActions,
-		Branch:        gitlab.String(d.Get("branch").(string)),
-		AuthorEmail:   gitlab.String(d.Get("author_email").(string)),
-		AuthorName:    gitlab.String(d.Get("author_name").(string)),
-		CommitMessage: gitlab.String(d.Get("commit_message").(string)),
-	})
-
-	if err != nil {
-		logD("received an error when sending commit: " + err.Error())
-		errCh <- err
-		logD("successfully sent the error on the the errCh")
-		return
+	doCommit := func(actions []*gitlab.CommitActionOptions) error {
+		return sendCommitActions(d.Get("project_id").(string), c, &gitlab.CreateCommitOptions{
+			Actions:       actions,
+			Branch:        gitlab.String(d.Get("branch").(string)),
+			AuthorEmail:   gitlab.String(d.Get("author_email").(string)),
+			AuthorName:    gitlab.String(d.Get("author_name").(string)),
+			CommitMessage: gitlab.String(d.Get("commit_message").(string)),
+		})
 	}
-	errCh <- nil
-	logD("successfully sent commit to gitlab api")
+
+	actionSyncronizer(debounceDuration, actionCh, respond, doCommit)
 }
 
 // actionSyncronizer will collect all gitlab.CommitActionOptions and return them in a slice when time since last resource received is bigger than debounce time.
 // The done channel is used to halt the first resource to avoid Terraform from exiting.
-func actionSyncronizer(debounce time.Duration, actionCh <-chan *gitlab.CommitActionOptions, filePathDone chan<- string) (string, []*gitlab.CommitActionOptions) {
+func actionSyncronizer(debounce time.Duration, actionCh <-chan *gitlab.CommitActionOptions, respond chan<- *responseSync, doCommit func(actions []*gitlab.CommitActionOptions) error) {
 	var (
 		actionsToSend  []*gitlab.CommitActionOptions
 		haltedResource string
@@ -158,7 +155,6 @@ func actionSyncronizer(debounce time.Duration, actionCh <-chan *gitlab.CommitAct
 
 	defer ticker.Stop()
 
-LOOP:
 	for {
 		select {
 		case action := <-actionCh:
@@ -173,22 +169,46 @@ LOOP:
 			} else {
 				logD("[PROVIDER] sending done to filepath: " + *action.FilePath)
 				// but we let the other resource exit
-				filePathDone <- *action.FilePath
+				respond <- &responseSync{
+					filePath: *action.FilePath,
+					err:      nil,
+				}
 			}
 			logD("[PROVIDER] total received actions: " + strconv.Itoa(len(actionsToSend)))
 		case <-ticker.C:
 			logD("[PROVIDER] new tick")
 			if time.Since(timeNow) > debounce {
-				logD("[PROVIDER] breaking loop due to time since last received action is greater than debounce time")
-				break LOOP
+				if len(actionsToSend) == 0 {
+					logD("[PROVIDER] exiting since no new actions received")
+					close(respond)
+					return
+				}
+
+				logD("[PROVIDER] sending commits due to time since last received action is greater than debounce time")
+				if err := doCommit(actionsToSend); err != nil {
+					logD("[PROVIDER] sending commit failed: " + err.Error())
+					respond <- &responseSync{
+						filePath: haltedResource,
+						err:      err,
+					}
+				}
+
+				logD("[PROVIDER] successfully sent commits - preparing for more resources")
+				respond <- &responseSync{
+					filePath: haltedResource,
+					err:      nil,
+				}
+
+				// cleaning up sent commits in case more resources are coming in
+				haltedResource = ""
+				actionsToSend = nil
+				timeNow = time.Now()
 			}
 		}
 	}
-
-	return haltedResource, actionsToSend
 }
 
-func doCommits(projectId string, c *gitlab.Client, opts *gitlab.CreateCommitOptions) error {
+func sendCommitActions(projectId string, c *gitlab.Client, opts *gitlab.CreateCommitOptions) error {
 	if len(opts.Actions) == 0 {
 		logD("skipping commit due no actions")
 		return nil

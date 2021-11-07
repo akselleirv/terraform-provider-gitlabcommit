@@ -1,4 +1,4 @@
-module github.com/hashicorp/terraform-provider-gitlabcommit
+module github.com/akselleirv/terraform-provider-gitlabcommit
 
 go 1.17
 

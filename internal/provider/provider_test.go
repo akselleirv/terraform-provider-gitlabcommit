@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/stretchr/testify/assert"
 	"github.com/xanzy/go-gitlab"
+	"log"
 	"os"
 	"sync"
 	"testing"
@@ -47,43 +48,43 @@ func testAccPreCheck(t *testing.T) {
 
 func TestActionSyncronizer(t *testing.T) {
 	var (
-		resourceHalted string
-		actualActions  []*gitlab.CommitActionOptions
 		inputActions   []*gitlab.CommitActionOptions
 		debounce       = 50 * time.Millisecond
 		actionCh       = make(chan *gitlab.CommitActionOptions)
-		filePathDone   = make(chan string)
+		responseSyncCh = make(chan *responseSync)
 		wg             = sync.WaitGroup{}
 	)
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		inputActions = append(inputActions, &gitlab.CommitActionOptions{
 			Action:   gitlab.FileAction(gitlab.FileCreate),
 			FilePath: gitlab.String(fmt.Sprintf("path/text-%d.txt", i)),
 		})
 	}
 
+	doCommits := func(actualActions []*gitlab.CommitActionOptions) error {
+		assert.Equal(t, inputActions, actualActions)
+		wg.Done()
+		return nil
+	}
+
 	start := time.Now()
 	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		resourceHalted, actualActions = actionSyncronizer(debounce, actionCh, filePathDone)
+		actionSyncronizer(debounce, actionCh, responseSyncCh, doCommits)
 	}()
 
 	for i, action := range inputActions {
 		actionCh <- action
 
 		if i != 0 {
-			actualFilePathDone := <-filePathDone
-			assert.Equal(t, *inputActions[i].FilePath, actualFilePathDone)
-			assert.Equal(t, "", resourceHalted, "this resource should be halted")
-			assert.Nil(t, actualActions, "the collected actions should not be sent yet")
+			resp := <-responseSyncCh
+			assert.Equal(t, *inputActions[i].FilePath, resp.filePath)
+			assert.NoError(t, resp.err)
 		}
 	}
-
+	log.Println("here 1")
 	wg.Wait()
-	within50Milli := time.Now().Add(time.Millisecond * -50)
-	assert.WithinDuration(t, within50Milli, start, 30*time.Millisecond)
-	assert.Equal(t, inputActions, actualActions)
-	assert.Equal(t, *inputActions[0].FilePath, resourceHalted)
+	within100Milli := time.Now().Add(time.Millisecond * -100)
+	assert.WithinDuration(t, within100Milli, start, 50*time.Millisecond)
 }

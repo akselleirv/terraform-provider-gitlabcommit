@@ -95,25 +95,6 @@ func resourceGitlabcommitDelete(ctx context.Context, d *schema.ResourceData, met
 	return nil
 }
 
-// waitForResponse listens for response from the actionSyncronizer
-func waitForResponse(filePath string, doneFilePath chan string, errCh <-chan error) error {
-	for {
-		select {
-		case filePathReceived := <-doneFilePath:
-			if filePathReceived == filePath {
-				logD("[RESOURCE] received my own filepath: " + filePathReceived)
-				return nil
-			}
-			go func(returnFilePath string) {
-				logD("[RESOURCE] resource '" + filePath + "' got '" + returnFilePath + "' sending back to synchronizer")
-				doneFilePath <- returnFilePath
-			}(filePathReceived)
-		case err := <-errCh:
-			return err
-		}
-	}
-}
-
 func applyAction(action *gitlab.FileActionValue, client *client, d *schema.ResourceData) error {
 	filePath := d.Get("file_path").(string)
 	content := d.Get("content").(string)
@@ -128,9 +109,24 @@ func applyAction(action *gitlab.FileActionValue, client *client, d *schema.Resou
 
 	return waitForResponse(
 		*gitlabAction.FilePath,
-		client.doneFilePath,
-		client.errCh,
+		client.responseSyncCh,
 	)
+}
+
+// waitForResponse listens for response from the actionSyncronizer
+func waitForResponse(filePath string, responseSyncCh chan *responseSync) error {
+	for {
+		resp := <-responseSyncCh
+		if resp.filePath == filePath {
+			logD("[RESOURCE] received my own filepath: " + resp.filePath)
+			if resp.err != nil {
+				return resp.err
+			}
+			return nil
+		}
+		logD("[RESOURCE] resource '" + filePath + "' got '" + resp.filePath + "' sending back to synchronizer")
+		responseSyncCh <- resp
+	}
 }
 
 func getFile(filePath, branch, projectId string, client *gitlab.Client) (*gitlab.File, error) {
