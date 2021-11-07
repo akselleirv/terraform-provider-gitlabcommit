@@ -60,7 +60,7 @@ jobs:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2.3.5
 
-      - name: Get dependencies
+      - name: Get dependencies for terratest
         run: |
           cd ./examples/provider/test/
           go mod download
@@ -71,7 +71,8 @@ jobs:
 
       - name: Terratest
         run: |
-          go test -v ./examples/provider/test/
+          cd ./examples/provider/test/
+          go test -v
 
 
       # run acceptance tests in a matrix with Terraform core versions

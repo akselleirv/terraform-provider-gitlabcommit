@@ -1,4 +1,4 @@
-module github.com/akselleirv/terraform-provider-gitlabcommit/examples/provider/test
+module github.com/akselleirv/terraform-provider-gitlabcommit/examples/provider
 
 go 1.17
 
