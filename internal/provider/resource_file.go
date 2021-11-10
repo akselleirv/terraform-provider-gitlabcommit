@@ -105,6 +105,7 @@ func applyAction(action *gitlab.FileActionValue, client *client, d *schema.Resou
 		Content:  gitlab.String(content),
 	}
 
+	logD("[RESOURCE] applying " + *gitlabAction.FilePath)
 	client.actionCh <- gitlabAction
 
 	return waitForResponse(
@@ -115,6 +116,7 @@ func applyAction(action *gitlab.FileActionValue, client *client, d *schema.Resou
 
 // waitForResponse listens for response from the actionSyncronizer
 func waitForResponse(filePath string, responseSyncCh chan *responseSync) error {
+	logD("[RESOURCE] will start waiting for response " + filePath)
 	for {
 		resp := <-responseSyncCh
 		if resp.filePath == filePath {

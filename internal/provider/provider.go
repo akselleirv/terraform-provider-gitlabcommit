@@ -179,9 +179,10 @@ func actionSyncronizer(debounce time.Duration, actionCh <-chan *gitlab.CommitAct
 			logD("[PROVIDER] new tick")
 			if time.Since(timeNow) > debounce {
 				if len(actionsToSend) == 0 {
-					logD("[PROVIDER] exiting since no new actions received")
-					close(respond)
-					return
+					logD("[PROVIDER] no actions received, skipping send and sleeping for 3 seconds")
+					time.Sleep(3 * time.Second)
+					timeNow = time.Now()
+					continue
 				}
 
 				logD("[PROVIDER] sending commits due to time since last received action is greater than debounce time")
